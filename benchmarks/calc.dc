@@ -1,0 +1,43 @@
+fn init(n, op) {
+  array A[n];
+  let i = 0;
+  while i < n {
+    A[i] = op;
+    i = i + 1;
+  }
+  return A;
+}
+
+fn calc(A, n) {
+  let result = 1;
+  let i = 0;
+  while i < n {
+    if A[i] == 0 {
+      result = result + 1;
+    } else if A[i] == 1 {
+      result = result - 1;
+    } else if A[i] == 2 {
+      result = result * i;
+    } else if A[i] == 3 {
+      result = result / i;
+    } else if A[i] == 4 {
+      result = result + i;
+    } else if A[i] == 5 {
+      result = result - i;
+    } else {
+      result = 0;
+    }
+    i = i + 1;
+  }
+  return result;
+}
+
+fn main() {
+  let n = 0;
+  in n;
+  let op = 0;
+  in op;
+  let A = init(n, op);
+  let result = calc(A, n);
+  out result;
+}

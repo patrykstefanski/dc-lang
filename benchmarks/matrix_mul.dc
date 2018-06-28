@@ -1,0 +1,51 @@
+fn read(n) {
+  let k = n * n;
+  array A[k];
+  let i = 0;
+  while i < k {
+    let t = 0;
+    in t;
+    A[i] = t;
+    i = i + 1;
+  }
+  return A;
+}
+
+fn write(M, n) {
+  let k = n * n;
+  let i = 0;
+  while i < k {
+    out M[i];
+    i = i + 1;
+  }
+}
+
+fn mul(A, B, n) {
+  let size = n * n;
+  array C[size];
+  let i = 0;
+  while i < n {
+    let j = 0;
+    while j < n {
+      let sum = 0;
+      let k = 0;
+      while k < n {
+        sum = sum + A[i * n + k] * B[k * n + j];
+        k = k + 1;
+      }
+      C[i * n + j] = sum;
+      j = j + 1;
+    }
+    i = i + 1;
+  }
+  return C;
+}
+
+fn main() {
+  let n = 0;
+  in n;
+  let A = read(n);
+  let B = read(n);
+  let C = mul(A, B, n);
+  write(C, n);
+}

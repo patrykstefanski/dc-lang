@@ -12,7 +12,7 @@
 #include <utility>
 #include <vector>
 
-#include <capstone.h>
+#include <capstone/capstone.h>
 
 #include <llvm/ADT/APInt.h>
 #include <llvm/ADT/StringRef.h>

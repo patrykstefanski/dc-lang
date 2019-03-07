@@ -8,6 +8,7 @@
 #include <memory>
 #include <optional>
 #include <set>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -16,24 +17,41 @@
 #include <llvm/ADT/APInt.h>
 #include <llvm/ADT/StringRef.h>
 #include <llvm/ADT/Twine.h>
+#include <llvm/ADT/iterator_range.h>
 #include <llvm/ExecutionEngine/ExecutionEngine.h>
 #include <llvm/ExecutionEngine/JITSymbol.h>
 #include <llvm/ExecutionEngine/Orc/CompileUtils.h>
-#include <llvm/ExecutionEngine/Orc/LambdaResolver.h>
+#include <llvm/ExecutionEngine/Orc/Core.h>
+#include <llvm/ExecutionEngine/Orc/IRCompileLayer.h>
+#include <llvm/ExecutionEngine/Orc/Legacy.h>
 #include <llvm/ExecutionEngine/Orc/RTDyldObjectLinkingLayer.h>
+#include <llvm/ExecutionEngine/RTDyldMemoryManager.h>
 #include <llvm/ExecutionEngine/RuntimeDyld.h>
 #include <llvm/ExecutionEngine/SectionMemoryManager.h>
+#include <llvm/IR/Argument.h>
 #include <llvm/IR/BasicBlock.h>
+#include <llvm/IR/Constants.h>
 #include <llvm/IR/DerivedTypes.h>
 #include <llvm/IR/Function.h>
+#include <llvm/IR/GlobalValue.h>
 #include <llvm/IR/IRBuilder.h>
+#include <llvm/IR/Instructions.h>
 #include <llvm/IR/LegacyPassManager.h>
 #include <llvm/IR/Module.h>
-#include <llvm/Object/SymbolSize.h>
+#include <llvm/IR/Type.h>
+#include <llvm/IR/Value.h>
+#include <llvm/Object/ObjectFile.h>
+#include <llvm/Object/SymbolicFile.h>
+#include <llvm/Pass.h>
 #include <llvm/Support/DynamicLibrary.h>
+#include <llvm/Support/Error.h>
 #include <llvm/Support/TargetSelect.h>
 #include <llvm/Support/raw_ostream.h>
+#include <llvm/Target/TargetMachine.h>
+#include <llvm/Transforms/InstCombine/InstCombine.h>
 #include <llvm/Transforms/Scalar.h>
+#include <llvm/Transforms/Scalar/InstSimplifyPass.h>
+#include <llvm/Transforms/Utils.h>
 
 #include "assert.hpp"
 #include "cxx_extensions.hpp"
@@ -48,16 +66,34 @@ void CodeGen::init() {
 
 CodeGen::CodeGen()
   : builder_(context_),
+    execution_session_{},
+    resolver_{llvm::orc::createLegacyLookupResolver(
+        execution_session_,
+        [this](const std::string& name) -> llvm::JITSymbol {
+          if (auto sym = compile_layer_.findSymbol(name, false))
+            return sym;
+          else if (auto error = sym.takeError())
+            return std::move(error);
+          if (auto addr = llvm::RTDyldMemoryManager::getSymbolAddressInProcess(name))
+            return llvm::JITSymbol{addr, llvm::JITSymbolFlags::Exported};
+          return nullptr;
+        },
+        [](llvm::Error error) {
+          cantFail(std::move(error), "lookup failed");
+        }
+    )},
     target_machine_(llvm::EngineBuilder().selectTarget()),
     data_layout_(target_machine_->createDataLayout()),
     object_layer_(
-        []() {
-          return std::make_shared<llvm::SectionMemoryManager>();
+        execution_session_,
+        [this](llvm::orc::VModuleKey) {
+          return llvm::orc::RTDyldObjectLinkingLayer::Resources{std::make_shared<llvm::SectionMemoryManager>(),
+                                                                resolver_};
         },
         debug_flag == 0 ?
             decltype(object_layer_)::NotifyLoadedFtor() :
-            [](decltype(object_layer_)::ObjHandleT,
-               const decltype(object_layer_)::ObjectPtr& ptr,
+            [](llvm::orc::VModuleKey,
+               const llvm::object::ObjectFile& obj,
                const llvm::RuntimeDyld::LoadedObjectInfo&) {
               std::fputs(
                   "\n"
@@ -65,12 +101,8 @@ CodeGen::CodeGen()
                   "Assembly:\n"
                   "---------\n",
                   stderr);
-              auto sizes = llvm::object::computeSymbolSizes(*ptr->getBinary());
-              for (const auto& [symbol, size] : sizes) {
-                if (size == 0) {
-                  continue;
-                }
-                auto s = symbol.getSection();
+              for (auto sym : obj.symbols()) {
+                auto s = sym.getSection();
                 if (!s) {
                   std::fputs("Failed to get section\n", stderr);
                   continue;
@@ -124,6 +156,7 @@ CodeGen::TracePtr CodeGen::compile(const std::vector<Instruction>& bytecode,
       llvm::FunctionType::get(llvm::Type::getVoidTy(context_),
                               {llvm::Type::getInt64Ty(context_)}, false),
       llvm::Function::ExternalLinkage, "exit", module.get());
+
   auto in_fn = llvm::Function::Create(
       llvm::FunctionType::get(llvm::Type::getInt64Ty(context_), {}, false),
       llvm::Function::ExternalLinkage, "_in", module.get());
@@ -133,12 +166,14 @@ CodeGen::TracePtr CodeGen::compile(const std::vector<Instruction>& bytecode,
       llvm::Function::ExternalLinkage, "_out", module.get());
 
   // A function for the compiled trace.
+  ASSERT_GT(trace.size(), 0);
+  auto trace_name = llvm::Twine{"_trace_"} + llvm::Twine{trace[0]};
   auto trace_fn = llvm::Function::Create(
       llvm::FunctionType::get(
           llvm::Type::getInt64Ty(context_),
           {llvm::PointerType::getUnqual(llvm::Type::getInt64Ty(context_))},
           false),
-      llvm::Function::ExternalLinkage, "trace", module.get());
+      llvm::Function::ExternalLinkage, trace_name, module.get());
   auto arg = trace_fn->args().begin();
 
   // A block for allocas and for loading registers from memory, which are
@@ -579,22 +614,9 @@ CodeGen::TracePtr CodeGen::compile(const std::vector<Instruction>& bytecode,
   }
 
   // Compile.
-  auto resolver = llvm::orc::createLambdaResolver(
-      [&](const std::string& name) {
-        if (auto sym = compile_layer_.findSymbol(name, false)) {
-          return sym;
-        }
-        return llvm::JITSymbol(nullptr);
-      },
-      [](const std::string& name) {
-        if (auto addr =
-                llvm::RTDyldMemoryManager::getSymbolAddressInProcess(name))
-          return llvm::JITSymbol(addr, llvm::JITSymbolFlags::Exported);
-        return llvm::JITSymbol(nullptr);
-      });
-  auto handle = cantFail(
-      compile_layer_.addModule(std::move(module), std::move(resolver)));
-  auto addr = cantFail(handle->get()->getSymbol("trace", false).getAddress());
+  auto key = execution_session_.allocateVModule();
+  cantFail(compile_layer_.addModule(key, std::move(module)));
+  auto addr = cantFail(compile_layer_.findSymbol(trace_name.str(), false).getAddress());
 
   ASSERT_EQ(finish_ret.has_value(), true);
   trace_info_[addr] = CodeGen::TraceInfo{*finish_ret, single_ret};
@@ -609,7 +631,7 @@ void CodeGen::optimize(llvm::Module* module) {
   fpm.add(llvm::createLICMPass());
   fpm.add(llvm::createLoopStrengthReducePass());
   fpm.add(llvm::createInstructionCombiningPass(true));
-  fpm.add(llvm::createInstructionSimplifierPass());
+  fpm.add(llvm::createInstSimplifyLegacyPass());
   fpm.add(llvm::createReassociatePass());
   fpm.add(llvm::createNewGVNPass());
   fpm.add(llvm::createCFGSimplificationPass());

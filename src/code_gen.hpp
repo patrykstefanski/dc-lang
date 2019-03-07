@@ -7,11 +7,14 @@
 #include <vector>
 
 #include <llvm/ExecutionEngine/Orc/CompileUtils.h>
+#include <llvm/ExecutionEngine/Orc/Core.h>
 #include <llvm/ExecutionEngine/Orc/IRCompileLayer.h>
+#include <llvm/ExecutionEngine/Orc/Legacy.h>
 #include <llvm/ExecutionEngine/Orc/RTDyldObjectLinkingLayer.h>
 #include <llvm/IR/DataLayout.h>
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/IR/LLVMContext.h>
+#include <llvm/IR/Module.h>
 #include <llvm/Target/TargetMachine.h>
 
 #include "instruction.hpp"
@@ -39,6 +42,8 @@ private:
 
   llvm::LLVMContext context_;
   llvm::IRBuilder<> builder_;
+  llvm::orc::ExecutionSession execution_session_;
+  std::shared_ptr<llvm::orc::SymbolResolver> resolver_;
   std::unique_ptr<llvm::TargetMachine> target_machine_;
   const llvm::DataLayout data_layout_;
   llvm::orc::RTDyldObjectLinkingLayer object_layer_;

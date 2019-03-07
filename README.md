@@ -5,7 +5,7 @@ FASTER THAN C!
 ## Requirements
 * C++17 compiler
 * CMake >= 3.8
-* LLVM 6
+* LLVM 7 (optional, you can build LLVM by setting DC_LANG_USE_SYSTEM_LLVM to OFF)
 
 ## Benchmarks
 Wall-clock time, average of 10 runs.
